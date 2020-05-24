@@ -73,6 +73,7 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
     del fgm
     allNuclei = ((foregroundMask)*mask)
     del foregroundMask
+    allNuclei = label(allNuclei > 0, connectivity=1).astype(np.int32)
     if nucleiFilter == 'IntPM':
         P = regionprops(allNuclei,nucleiCenters,cache=False)
     elif nucleiFilter == 'Int':
