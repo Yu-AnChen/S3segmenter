@@ -3,19 +3,19 @@ import tifffile
 import os
 import numpy as np
 from skimage import io as skio
-from scipy.ndimage import *
+# from scipy.ndimage import *
 import scipy.ndimage as ndi
-from skimage.morphology import *
-from skimage.morphology import extrema
-from skimage import morphology
 from skimage.measure import regionprops
 from skimage.transform import resize
-from skimage.filters import threshold_otsu
-from skimage.filters import gaussian
+from skimage.filters import threshold_otsu, gaussian
 from skimage.feature import peak_local_max
 from skimage.color import label2rgb
 from skimage.io import imsave
-from skimage.segmentation import clear_border
+from skimage.segmentation import clear_border, watershed
+from skimage.morphology import (
+    extrema, label, remove_small_objects, binary_erosion,
+    disk, 
+)
 from scipy.ndimage.filters import uniform_filter
 from os.path import *
 from os import listdir, makedirs, remove
@@ -28,6 +28,9 @@ import sys
 import argparse
 import re
 import copy
+import datetime
+from skimage.util import view_as_windows, montage
+from joblib import Parallel, delayed
 
 
 def imshowpair(A,B):
@@ -54,6 +57,55 @@ def normI(I):
     J = J/(p99-p1);
     return J
 
+def view_as_windows_overlap(
+    img, block_size, overlap_size
+): 
+    init_shape = img.shape
+    step_size = block_size - overlap_size
+
+    padded_shape = np.array(init_shape) + overlap_size
+    n = np.ceil((padded_shape - block_size) / step_size)
+    padded_shape = (block_size + (n * step_size)).astype(np.int)
+
+    half = int(overlap_size / 2)
+    img = np.pad(img, (
+        (half, padded_shape[0] - init_shape[0] - half), 
+        (half, padded_shape[1] - init_shape[1] - half),
+    ), mode='edge')
+
+    return view_as_windows(img, block_size, step_size)
+
+def reconstruct_from_windows(
+    window_view, block_size, overlap_size, out_shape=None
+):
+    grid_shape = window_view.shape[:2]
+
+    start = int(overlap_size / 2)
+    end = int(block_size - start)
+
+    window_view = window_view.reshape(
+        (-1, block_size, block_size)
+    )[..., start:end, start:end]
+
+    if out_shape:
+        re, ce = out_shape
+    else:
+        re, ce = None, None
+
+    return montage(
+        window_view, grid_shape=grid_shape, 
+    )[:re, :ce]
+
+def local_max_in_gaussian(img, sigma, h):
+    return peak_local_max(
+        extrema.h_maxima(
+            ndi.gaussian_filter(np.invert(img), sigma=sigma),
+            h=h
+        ),
+        indices=False,
+        footprint=np.ones((3, 3))
+    )
+
 def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFilter,nucleiRegion):
     nucleiContours = nucleiPM[:,:,1]
     nucleiCenters = nucleiPM[:,:,0]
@@ -65,47 +117,95 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
     else:
          nucleiDiameter = logSigma
     logMask = nucleiCenters > 150
-   # dist_trans_img = ndi.distance_transform_edt(logMask)
-    fgm=peak_local_max(extrema.h_maxima(gaussian_filter(255-nucleiContours,logSigma[1]/30),logSigma[1]/30), indices=False,
-                                      footprint=np.ones((3, 3)))
-    _, fgm= cv2.connectedComponents(fgm.astype(np.uint8))
-    foregroundMask= morphology.watershed(nucleiContours,fgm,watershed_line=True)
-    del fgm
-    allNuclei = ((foregroundMask)*mask)
-    del foregroundMask
+    # dist_trans_img = ndi.distance_transform_edt(logMask)
+    
+    img_shape = nucleiContours.shape
+    block_size = 2000
+    overlap_size = 500
+    window_view_shape = view_as_windows_overlap(
+        nucleiContours, block_size, overlap_size
+    ).shape
+
+    nucleiContours = view_as_windows_overlap(
+        nucleiContours, block_size, overlap_size
+    ).reshape(-1, block_size, block_size)
+
+    print('    ', datetime.datetime.now(), 'local max')
+    fgm = np.array(
+        Parallel(n_jobs=6)(delayed(local_max_in_gaussian)(
+            img, logSigma[1]/30, logSigma[1]/30
+        ) for img in nucleiContours)
+    )
+    fgm = reconstruct_from_windows(
+        fgm.reshape(window_view_shape),
+        block_size, overlap_size, img_shape
+    )
+    fgm = label(fgm).astype(np.int32)
+
+    print('    ', datetime.datetime.now(), 'watershed')
+    fgm = view_as_windows_overlap(
+        fgm, block_size, overlap_size
+    ).reshape(-1, block_size, block_size)
+
+    foregroundMask = np.array(
+        Parallel(n_jobs=6)(delayed(watershed)(
+            n, f, watershed_line=True
+        ) for n, f in zip(nucleiContours, fgm))
+    ) > 0
+    
+    del fgm, nucleiContours
+
+    foregroundMask = reconstruct_from_windows(
+        foregroundMask.reshape(window_view_shape),
+        block_size, overlap_size, img_shape
+    )
+    foregroundMask *= mask
+    remove_small_objects(
+        foregroundMask, 
+        min_size=np.floor((logSigma[0]**2)*3/4), 
+        in_place=True
+    )
+    foregroundMask = label(foregroundMask, connectivity=1).astype(np.int32)
+
     if nucleiFilter == 'IntPM':
-        P = regionprops(allNuclei,nucleiCenters,cache=False)
+        int_img = nucleiCenters
     elif nucleiFilter == 'Int':
-        P = regionprops(allNuclei,nucleiImage,cache=False)
-    mean_int = np.array([prop.mean_intensity for prop in P]) 
-    #kmeans = KMeans(n_clusters=2).fit(mean_int.reshape(-1,1))
-    MITh = threshold_otsu(mean_int.reshape(-1,1))
-    allNuclei = np.zeros(mask.shape,dtype=np.uint32)
-    count = 0
-    del nucleiImage
-    
-    for props in P:
-        intensity = props.mean_intensity
-        if intensity >MITh:
-            count += 1
-            yi = props.coords[:, 0]
-            xi = props.coords[:, 1]
-            allNuclei[yi, xi] = count
-    
-    P = regionprops(allNuclei,cache=False)
-    count=0
+        int_img = nucleiImage
+
+    print('    ', datetime.datetime.now(), 'regionprops')
+    P = regionprops(foregroundMask, int_img)
+
+    def props_of_keys(prop, keys):
+        return [prop[k] for k in keys]
+
+    prop_keys = ['mean_intensity', 'area', 'solidity', 'label']
+    mean_ints, areas, solidities, labels = np.array(
+        Parallel(n_jobs=6)(delayed(props_of_keys)(prop, prop_keys) 
+            for prop in P
+        )
+    ).T
+    del P
+
+    # kmeans = KMeans(n_clusters=2).fit(mean_int.reshape(-1,1))
+    MITh = threshold_otsu(mean_ints)
+
     maxArea = (logSigma[1]**2)*3/4
     minArea = (logSigma[0]**2)*3/4
-    nucleiMask = np.zeros(mask.shape,dtype=np.uint32)
-    for props in P:
-        area = props.area
-        solidity = props.solidity
-        if minArea < area < maxArea and solidity >0.8:
-            count += 1
-            yi = props.coords[:, 0]
-            xi = props.coords[:, 1]
-            nucleiMask[yi, xi] = count
-    return nucleiMask
+    minSolidity = 0.8
+
+    passed = np.logical_and.reduce((
+        np.greater(mean_ints, MITh),
+        np.logical_and(areas > minArea, areas < maxArea),
+        np.greater(solidities, minSolidity)
+    ))
+
+    # set failed mask label to zero
+    foregroundMask *= np.isin(foregroundMask, labels[passed])
+
+    np.greater(foregroundMask, 0, out=foregroundMask)
+    foregroundMask = label(foregroundMask, connectivity=1).astype(np.int32)
+
+    return foregroundMask
     
 #    img2 = nucleiImage.copy()
 #    stacked_img = np.stack((img2,)*3, axis=-1)
@@ -116,7 +216,7 @@ def bwmorph(mask,radius):
     mask = np.array(mask,dtype=np.uint8)
     #labels = label(mask)
     background = nucleiMask == 0
-    distances, (i, j) = distance_transform_edt(background, return_indices=True)
+    distances, (i, j) = ndi.distance_transform_edt(background, return_indices=True)
     cellMask = nucleiMask.copy()
     finalmask = background & (distances <= radius)
     cellMask[finalmask] = nucleiMask[i[finalmask], j[finalmask]]
@@ -130,7 +230,7 @@ def bwmorph(mask,radius):
 
 def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',radius = 5):
     mask = (nucleiMask + resize(mask,(nucleiMask.shape[0],nucleiMask.shape[1]),order=0))>0
-    gdist = distance_transform_edt(1-(nucleiMask>0))
+    gdist = ndi.distance_transform_edt(1-(nucleiMask>0))
     if cytoMethod == 'distanceTransform':
         mask = np.array(mask,dtype=np.uint32)
         markers= nucleiMask
@@ -141,7 +241,7 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
         grad = np.sqrt(c2 - c1*c1)*np.sqrt(9./8)
         grad[np.isnan(grad)]=0
         gdist= np.sqrt(np.square(grad) + 0.000001*np.amax(grad)/np.amax(gdist)*np.square(gdist))
-        bg = binary_erosion(np.invert(mask),morphology.selem.disk(radius, np.uint8))
+        bg = binary_erosion(np.invert(mask),disk(radius, np.uint8))
         markers=nucleiMask.copy()
         markers[bg==1] = np.amax(nucleiMask)+1
         markers = label(markers>0,connectivity=1)
