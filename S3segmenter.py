@@ -251,6 +251,7 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
         mask =np.array(bwmorph(nucleiMask,radius)*mask,dtype=np.uint32)>0
         markers= nucleiMask
     
+    print('    ', datetime.datetime.now(), 'watershed')
     cellMask  =clear_border(watershed(gdist,markers,watershed_line=True))
     del gdist, markers, cyto
     cellMask = np.array(cellMask*mask,dtype=np.uint32)
@@ -367,6 +368,7 @@ if __name__ == '__main__':
         TissueMaskChan.append(nucMaskChan)
             
     #crop images if needed
+    print(datetime.datetime.now(), 'Cropping image')
     if args.crop == 'interactiveCrop':
         nucleiCrop = tifffile.imread(imagePath,key = nucMaskChan)
         r=cv2.selectROI(resize(nucleiCrop,(nucleiCrop.shape[0] // 10, nucleiCrop.shape[1] // 10)))
@@ -385,6 +387,7 @@ if __name__ == '__main__':
     nucleiPM = np.dstack((nucleiPM,nucleiProbMaps[int(PMrect[0]):int(PMrect[0]+PMrect[2]), int(PMrect[1]):int(PMrect[1]+PMrect[3])]))
 
     # mask the core/tissue
+    print(datetime.datetime.now(), 'Computing tissue mask')
     if args.crop == 'dearray':
         TMAmask = tifffile.imread(maskPath)
     elif args.crop =='plate':
@@ -416,9 +419,11 @@ if __name__ == '__main__':
         del tissue_gauss, tissue
 
     # nuclei segmentation
+    print(datetime.datetime.now(), 'Segmenting nuclei')
     nucleiMask = S3NucleiSegmentationWatershed(nucleiPM,nucleiCrop,args.logSigma,TMAmask,args.nucleiFilter,args.nucleiRegion)
     del nucleiPM
     # cytoplasm segmentation
+    print(datetime.datetime.now(), 'Segmenting cytoplasm')
     if args.segmentCytoplasm == 'segmentCytoplasm':
         count =0
         if args.crop == 'noCrop' or args.crop == 'dearray' or args.crop == 'plate':
