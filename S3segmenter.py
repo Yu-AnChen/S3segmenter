@@ -281,7 +281,7 @@ def exportMasks(mask,image,outputPath,filePrefix,fileName,saveFig=True,saveMasks
         resolution = np.round(1)
         kwargs['resolution'] = (resolution, resolution, 'cm')
         kwargs['metadata'] = None
-        imsave(outputPath + os.path.sep + fileName + 'Mask.tif',mask, plugin="tifffile")
+        imsave(outputPath + os.path.sep + fileName + 'Mask.tif',mask, plugin="tifffile", check_contrast=False)
         
     if saveFig== True:
         mask=np.uint8(mask>0)
