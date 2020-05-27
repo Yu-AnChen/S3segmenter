@@ -58,7 +58,8 @@ def normI(I):
     return J
 
 def view_as_windows_overlap(
-    img, block_size, overlap_size
+    img, block_size, overlap_size, pad_mode='constant',
+    return_padding_mask=False
 ): 
     init_shape = img.shape
     step_size = block_size - overlap_size
@@ -71,9 +72,20 @@ def view_as_windows_overlap(
     img = np.pad(img, (
         (half, padded_shape[0] - init_shape[0] - half), 
         (half, padded_shape[1] - init_shape[1] - half),
-    ), mode='edge')
+    ), mode=pad_mode)
 
-    return view_as_windows(img, block_size, step_size)
+    if return_padding_mask:
+        padding_mask = np.ones(init_shape)
+        padding_mask = np.pad(padding_mask, (
+            (half, padded_shape[0] - init_shape[0] - half), 
+            (half, padded_shape[1] - init_shape[1] - half),
+        ), mode='constant', constant_values=0).astype(np.bool)
+        return (
+            view_as_windows(img, block_size, step_size),
+            view_as_windows(padding_mask, block_size, step_size)
+        )
+    else:
+        return view_as_windows(img, block_size, step_size)
 
 def reconstruct_from_windows(
     window_view, block_size, overlap_size, out_shape=None
@@ -96,8 +108,28 @@ def reconstruct_from_windows(
         window_view, grid_shape=grid_shape, 
     )[:re, :ce]
 
-def local_max_in_gaussian(img, sigma, h):
-    return peak_local_max(
+def crop_with_padding_mask(img, padding_mask, return_mask=False):
+    if np.all(padding_mask == 1):
+        return img, padding_mask if return_mask else img
+    (r_s, r_e), (c_s, c_e) = [
+        (i.min(), i.max() + 1)
+        for i in np.where(padding_mask == 1)
+    ]
+    padded = np.zeros_like(img)
+    img = img[r_s:r_e, c_s:c_e]
+    padded[r_s:r_e, c_s:c_e] = 1
+    return img, padded if return_mask else img
+
+def local_max_in_gaussian_padding_mask(
+    img, sigma, h, padding_mask=None
+):
+    padded = None
+    if padding_mask is not None and np.any(padding_mask == 0):
+        img, padded = crop_with_padding_mask(
+            img, padding_mask, return_mask=True
+        )
+    
+    maxima = peak_local_max(
         extrema.h_maxima(
             ndi.gaussian_filter(np.invert(img), sigma=sigma),
             h=h
@@ -105,6 +137,11 @@ def local_max_in_gaussian(img, sigma, h):
         indices=False,
         footprint=np.ones((3, 3))
     )
+    if padded is None:
+        return maxima
+    else:
+        padded[padded == 1] = maxima.flatten()
+        return padded
 
 def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFilter,nucleiRegion):
     nucleiContours = nucleiPM[:,:,1]
@@ -126,15 +163,18 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
         nucleiContours, block_size, overlap_size
     ).shape
 
-    nucleiContours = view_as_windows_overlap(
-        nucleiContours, block_size, overlap_size
-    ).reshape(-1, block_size, block_size)
+    nucleiContours, padding_mask = view_as_windows_overlap(
+        nucleiContours, block_size, overlap_size,
+        pad_mode='constant', return_padding_mask=True
+    )
+    nucleiContours = nucleiContours.reshape(-1, block_size, block_size)
+    padding_mask = padding_mask.reshape(-1, block_size, block_size)
 
     print('    ', datetime.datetime.now(), 'local max')
     fgm = np.array(
-        Parallel(n_jobs=6)(delayed(local_max_in_gaussian)(
-            img, logSigma[1]/30, logSigma[1]/30
-        ) for img in nucleiContours)
+        Parallel(n_jobs=6)(delayed(local_max_in_gaussian_padding_mask)(
+            img, logSigma[1]/30, logSigma[1]/30, padding_mask=m
+        ) for img, m in zip(nucleiContours, padding_mask))
     )
     fgm = reconstruct_from_windows(
         fgm.reshape(window_view_shape),
@@ -149,8 +189,8 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
 
     foregroundMask = np.array(
         Parallel(n_jobs=6)(delayed(watershed)(
-            n, f, watershed_line=True
-        ) for n, f in zip(nucleiContours, fgm))
+            n, f, mask=m, watershed_line=True
+        ) for n, f, m in zip(nucleiContours, fgm, padding_mask))
     ) > 0
     
     del fgm, nucleiContours
