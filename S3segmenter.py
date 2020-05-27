@@ -276,24 +276,28 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
         markers= nucleiMask
     elif cytoMethod == 'hybrid':
         cytoBlur = gaussian(cyto,2)
+        del cyto
         c1 = uniform_filter(cytoBlur, 3, mode='reflect')
         c2 = uniform_filter(cytoBlur*cytoBlur, 3, mode='reflect')
+        del cytoBlur
         grad = np.sqrt(c2 - c1*c1)*np.sqrt(9./8)
+        del c1, c2
         grad[np.isnan(grad)]=0
         gdist= np.sqrt(np.square(grad) + 0.000001*np.amax(grad)/np.amax(gdist)*np.square(gdist))
+        del grad
         bg = binary_erosion(np.invert(mask),disk(radius, np.uint8))
         markers=nucleiMask.copy()
         markers[bg==1] = np.amax(nucleiMask)+1
+        del bg
         markers = label(markers>0,connectivity=1)
         mask = np.ones(nucleiMask.shape)
-        del bg
     elif cytoMethod == 'ring':
         mask =np.array(bwmorph(nucleiMask,radius)*mask,dtype=np.uint32)>0
         markers= nucleiMask
     
     print('    ', datetime.datetime.now(), 'watershed')
     cellMask  =clear_border(watershed(gdist,markers,watershed_line=True))
-    del gdist, markers, cyto
+    del gdist, markers
     cellMask = np.array(cellMask*mask,dtype=np.uint32)
 	
     finalCellMask = np.zeros(cellMask.shape,dtype=np.uint32)
