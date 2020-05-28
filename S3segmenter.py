@@ -144,8 +144,10 @@ def contour_pm_watershed(
         footprint=np.ones((3, 3))
     )
     maxima = label(maxima).astype(np.int32)
+    # passing mask to the watershed function gives very different result
+    # will need to inspect more
     maxima = watershed(
-        contour_pm, maxima, watershed_line=True
+        contour_pm, maxima, watershed_line=True, mask=None
     ) > 0
     maxima *= tissue_mask
     
