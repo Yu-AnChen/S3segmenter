@@ -120,23 +120,24 @@ def crop_with_padding_mask(img, padding_mask, return_mask=False):
     padded[r_s:r_e, c_s:c_e] = 1
     return (img, padded) if return_mask else img
 
-def local_max_in_gaussian_padding_mask(
-    img, sigma, h, padding_mask=None, watershed_mask=None
+def contour_pm_watershed(
+    contour_pm, sigma=2, h=0, tissue_mask=None,
+    padding_mask=None, min_size=None, max_size=None
 ):
-    if watershed_mask is None:
-        watershed_mask = np.ones_like(img)
+    if tissue_mask is None:
+        tissue_mask = np.ones_like(contour_pm)
     padded = None
     if padding_mask is not None and np.any(padding_mask == 0):
-        img, padded = crop_with_padding_mask(
-            img, padding_mask, return_mask=True
+        contour_pm, padded = crop_with_padding_mask(
+            contour_pm, padding_mask, return_mask=True
         )
-        watershed_mask = crop_with_padding_mask(
-            watershed_mask, padding_mask
+        tissue_mask = crop_with_padding_mask(
+            tissue_mask, padding_mask
         )
     
     maxima = peak_local_max(
         extrema.h_maxima(
-            ndi.gaussian_filter(np.invert(img), sigma=sigma),
+            ndi.gaussian_filter(np.invert(contour_pm), sigma=sigma),
             h=h
         ),
         indices=False,
@@ -144,18 +145,18 @@ def local_max_in_gaussian_padding_mask(
     )
     maxima = label(maxima).astype(np.int32)
     maxima = watershed(
-        img, maxima, watershed_line=True
+        contour_pm, maxima, watershed_line=True
     ) > 0
-    maxima *= watershed_mask
-
-    logSigma =  [3, 60]
-    maxima = label(maxima, connectivity=1).astype(np.int32)
-    areas = np.bincount(maxima.ravel())
-    size_passed = np.arange(areas.size)[
-        np.logical_and(areas < (logSigma[1]**2)*3/4, areas > (logSigma[0]**2)*3/4)
-    ]
-    maxima *= np.isin(maxima, size_passed)
-    maxima = maxima > 0
+    maxima *= tissue_mask
+    
+    if min_size is not None and max_size is not None:
+        maxima = label(maxima, connectivity=1).astype(np.int32)
+        areas = np.bincount(maxima.ravel())
+        size_passed = np.arange(areas.size)[
+            np.logical_and(areas > min_size, areas < max_size)
+        ]
+        maxima *= np.isin(maxima, size_passed)
+        np.greater(maxima, 0, out=maxima)
 
     if padded is None:
         return maxima.astype(np.bool)
@@ -166,7 +167,7 @@ def local_max_in_gaussian_padding_mask(
 def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFilter,nucleiRegion):
     nucleiContours = nucleiPM[:,:,1]
     nucleiCenters = nucleiPM[:,:,0]
-    del nucleiPM
+    # del nucleiPM
     mask = resize(TMAmask,(nucleiImage.shape[0],nucleiImage.shape[1]),order = 0)>0
  
     if len(logSigma)==1:
@@ -189,22 +190,24 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
     )
     nucleiContours = nucleiContours.reshape(-1, block_size, block_size)
     padding_mask = padding_mask.reshape(-1, block_size, block_size)
-
-    print('    ', datetime.datetime.now(), 'local max')
-
-    print('    ', datetime.datetime.now(), 'watershed')
-
     mask = view_as_windows_overlap(
         mask, block_size, overlap_size
     ).reshape(-1, block_size, block_size) 
 
+    print('    ', datetime.datetime.now(), 'local max')
+    print('    ', datetime.datetime.now(), 'watershed')
+
+    maxArea = (logSigma[1]**2)*3/4
+    minArea = (logSigma[0]**2)*3/4
+
     foregroundMask = np.array(
-        Parallel(n_jobs=6)(delayed(local_max_in_gaussian_padding_mask)(
-            img, logSigma[1]/30, logSigma[1]/30, padding_mask=m, watershed_mask=wm
-        ) for img, m, wm in zip(nucleiContours, padding_mask, mask))
+        Parallel(n_jobs=6, prefer='threads')(delayed(contour_pm_watershed)(
+            img, sigma=logSigma[1]/30, h=logSigma[1]/30, tissue_mask=tm,
+            padding_mask=m, min_size=minArea, max_size=maxArea
+        ) for img, tm, m in zip(nucleiContours, mask, padding_mask))
     )
 
-    del nucleiContours
+    del nucleiContours, mask
 
     foregroundMask = reconstruct_from_windows(
         foregroundMask.reshape(window_view_shape),
@@ -234,8 +237,6 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
     # kmeans = KMeans(n_clusters=2).fit(mean_int.reshape(-1,1))
     MITh = threshold_otsu(mean_ints)
 
-    maxArea = (logSigma[1]**2)*3/4
-    minArea = (logSigma[0]**2)*3/4
     minSolidity = 0.8
 
     passed = np.logical_and.reduce((
