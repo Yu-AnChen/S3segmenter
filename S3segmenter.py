@@ -14,7 +14,7 @@ from skimage.io import imsave
 from skimage.segmentation import clear_border, watershed
 from skimage.morphology import (
     extrema, label, remove_small_objects, binary_erosion,
-    disk, 
+    disk, binary_dilation
 )
 from scipy.ndimage.filters import uniform_filter
 from os.path import *
@@ -299,8 +299,9 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
         markers = label(markers>0,connectivity=1)
         mask = np.ones(nucleiMask.shape)
     elif cytoMethod == 'ring':
-        mask =np.array(bwmorph(nucleiMask,radius)*mask,dtype=np.uint32)>0
-        markers= nucleiMask
+        mask = binary_dilation(mask > 0, selem=disk(radius))
+        markers = nucleiMask
+        gdist = -markers
     
     print('    ', datetime.datetime.now(), 'watershed')
     cellMask  =clear_border(watershed(gdist,markers,watershed_line=True))
