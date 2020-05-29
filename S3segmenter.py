@@ -299,7 +299,7 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
         markers = label(markers>0,connectivity=1)
         mask = np.ones(nucleiMask.shape)
     elif cytoMethod == 'ring':
-        mask = binary_dilation(mask > 0, selem=disk(radius))
+        mask *= binary_dilation(nucleiMask > 0, selem=disk(radius))
         markers = nucleiMask
         gdist = -markers
     
