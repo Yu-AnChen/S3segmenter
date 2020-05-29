@@ -304,9 +304,8 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
         gdist = -markers
     
     print('    ', datetime.datetime.now(), 'watershed')
-    cellMask  =clear_border(watershed(gdist,markers,watershed_line=True))
-    del gdist, markers
-    cellMask = np.array(cellMask*mask,dtype=np.uint32)
+    cellMask  =clear_border(watershed(gdist,markers,watershed_line=True,mask=mask))
+    del gdist, markers, mask
 	
     finalCellMask = np.zeros(cellMask.shape,dtype=np.uint32)
     P = regionprops(label(cellMask>0,connectivity=1),nucleiMask>0,cache=False)
