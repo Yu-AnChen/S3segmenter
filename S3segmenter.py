@@ -303,23 +303,51 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
         markers = nucleiMask
         gdist = -markers
     
+    # settings for window operation
+    img_shape = nucleiMask.shape
+    block_size = 2000
+    overlap_size = 500
+    window_view_shape = view_as_windows_overlap(
+        nucleiMask, block_size, overlap_size
+    ).shape
+    
+    # 4 cores
     print('    ', datetime.datetime.now(), 'watershed')
-    cellMask  =clear_border(watershed(gdist,markers,watershed_line=True,mask=mask))
-    del gdist, markers, mask
-	
-    finalCellMask = np.zeros(cellMask.shape,dtype=np.uint32)
-    P = regionprops(label(cellMask>0,connectivity=1),nucleiMask>0,cache=False)
-    count=0
-    for props in P:
-         if props.max_intensity>0 :
-            count += 1
-            yi = props.coords[:, 0]
-            xi = props.coords[:, 1]
-            finalCellMask[yi, xi] = count
-    nucleiMask = np.array(nucleiMask>0,dtype=np.uint32)
-    nucleiMask = finalCellMask*nucleiMask
-    cytoplasmMask = np.subtract(finalCellMask,nucleiMask)
-    return cytoplasmMask,nucleiMask,finalCellMask
+    gdist = view_as_windows_overlap(
+        gdist, block_size, overlap_size
+    ).reshape(-1, block_size, block_size)
+
+    markers = view_as_windows_overlap(
+        markers, block_size, overlap_size
+    ).reshape(-1, block_size, block_size)
+
+    mask = view_as_windows_overlap(
+        mask, block_size, overlap_size
+    ).reshape(-1, block_size, block_size)
+
+    cellMask = (np.array(
+        Parallel(n_jobs=6)(delayed(watershed)(
+            g, m, watershed_line=True, mask=w_m
+        ) for g, m, w_m in zip(gdist, markers, mask))
+    ) > 0).astype(np.bool)
+    del gdist, markers
+    cellMask = reconstruct_from_windows(
+        cellMask.reshape(window_view_shape),
+        block_size, overlap_size, img_shape
+    )
+    cellMask = label(cellMask, connectivity=1).astype(np.int32)
+    cellMask = clear_border(cellMask)
+    passed = np.unique(
+        np.multiply(cellMask, nucleiMask > 0)
+    )
+    cellMask *= np.isin(cellMask, passed)
+    cellMask = label(cellMask > 0, connectivity=1).astype(np.int32)
+    # Any modification made to the nucleiMask would affect this global
+    # variable, has to assign the the result to a new variable
+    filteredNucleiMask = np.multiply(nucleiMask > 0, cellMask)
+    cytoplasmMask = np.subtract(cellMask, filteredNucleiMask)
+    
+    return cytoplasmMask, nucleiMask, cellMask
     
 def exportMasks(mask,image,outputPath,filePrefix,fileName,saveFig=True,saveMasks = True):
     outputPath =outputPath + os.path.sep + filePrefix
