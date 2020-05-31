@@ -303,6 +303,12 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
         markers = nucleiMask
         gdist = -markers
     
+    # With the rolling window approach, the ring and hybrid give the 
+    # same results as the whole image approach. The distance-transform
+    # approach gives quite different results which requires more 
+    # investigation.
+    # Update - the differences are gone if set watershed_line=False
+
     # settings for window operation
     img_shape = nucleiMask.shape
     block_size = 2000
@@ -325,12 +331,17 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
         mask, block_size, overlap_size
     ).reshape(-1, block_size, block_size)
 
-    cellMask = (np.array(
-        Parallel(n_jobs=6)(delayed(watershed)(
-            g, m, watershed_line=True, mask=w_m
+    # Wrapper to reduce memory useage
+    def watershed_return_binary(img, marker, mask):
+        return (
+            watershed(img, marker, mask=mask, watershed_line=True) > 0
+        ).astype(np.bool)
+    cellMask = np.array(
+        Parallel(n_jobs=6)(delayed(watershed_return_binary)(
+            g, m, w_m
         ) for g, m, w_m in zip(gdist, markers, mask))
-    ) > 0).astype(np.bool)
-    del gdist, markers
+    )
+    del gdist, markers, mask
     cellMask = reconstruct_from_windows(
         cellMask.reshape(window_view_shape),
         block_size, overlap_size, img_shape
@@ -342,10 +353,10 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
     )
     cellMask *= np.isin(cellMask, passed)
     cellMask = label(cellMask > 0, connectivity=1).astype(np.int32)
-    # Any modification made to the nucleiMask would affect this global
-    # variable, has to assign the the result to a new variable
-    filteredNucleiMask = np.multiply(nucleiMask > 0, cellMask)
-    cytoplasmMask = np.subtract(cellMask, filteredNucleiMask)
+    # Passing the out kwarg into numpy ufuncs will change the target
+    # variable in-place, reassigning does not have this effect
+    nucleiMask = np.multiply(nucleiMask > 0, cellMask)
+    cytoplasmMask = np.subtract(cellMask, nucleiMask)
     
     return cytoplasmMask, nucleiMask, cellMask
     
