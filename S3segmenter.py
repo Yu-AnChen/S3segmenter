@@ -516,24 +516,26 @@ if __name__ == '__main__':
     print(datetime.datetime.now(), 'Segmenting cytoplasm')
     if args.segmentCytoplasm == 'segmentCytoplasm':
         count =0
-        if args.crop == 'noCrop' or args.crop == 'dearray' or args.crop == 'plate':
-            cyto=np.empty((len(args.CytoMaskChan),nucleiCrop.shape[0],nucleiCrop.shape[1]),dtype=np.uint16)    
-            for iChan in args.CytoMaskChan:
-                cyto[count,:,:] =  skio.imread(imagePath, key=iChan)
-                count+=1
-        else:
-            cyto=np.empty((len(args.CytoMaskChan),rect[3],rect[2]),dtype=np.int16)
-            for iChan in args.CytoMaskChan:
-                cytoFull= skio.imread(imagePath, key=iChan)
-                cyto[count,:,:] = cytoFull[int(PMrect[0]):int(PMrect[0]+PMrect[2]), int(PMrect[1]):int(PMrect[1]+PMrect[3])]
-                count+=1
-        cyto = np.amax(cyto,axis=0)
-        cytoplasmMask,nucleiMaskTemp,cellMask = S3CytoplasmSegmentation(nucleiMask,cyto,TMAmask,args.cytoMethod,args.cytoDilation)
-        exportMasks(nucleiMaskTemp,nucleiCrop,outputPath,filePrefix,'nuclei',args.saveFig,args.saveMask)
-        exportMasks(cytoplasmMask,cyto,outputPath,filePrefix,'cyto',args.saveFig,args.saveMask)
-        exportMasks(cellMask,cyto,outputPath,filePrefix,'cell',args.saveFig,args.saveMask)
+        if args.cytoMethod != 'ring':
+            if args.crop == 'noCrop' or args.crop == 'dearray' or args.crop == 'plate':
+                cyto=np.empty((len(args.CytoMaskChan),nucleiCrop.shape[0],nucleiCrop.shape[1]),dtype=np.uint16)    
+                for iChan in args.CytoMaskChan:
+                    cyto[count,:,:] =  skio.imread(imagePath, key=iChan)
+                    count+=1
+            else:
+                cyto=np.empty((len(args.CytoMaskChan),rect[3],rect[2]),dtype=np.int16)
+                for iChan in args.CytoMaskChan:
+                    cytoFull= skio.imread(imagePath, key=iChan)
+                    cyto[count,:,:] = cytoFull[int(PMrect[0]):int(PMrect[0]+PMrect[2]), int(PMrect[1]):int(PMrect[1]+PMrect[3])]
+                    count+=1
+        
+            cyto = np.amax(cyto,axis=0)
+            cytoplasmMask,nucleiMaskTemp,cellMask = S3CytoplasmSegmentation(nucleiMask,cyto,TMAmask,args.cytoMethod,args.cytoDilation)
+            exportMasks(nucleiMaskTemp,nucleiCrop,outputPath,filePrefix,'nuclei',args.saveFig,args.saveMask)
+            exportMasks(cytoplasmMask,cyto,outputPath,filePrefix,'cyto',args.saveFig,args.saveMask)
+            exportMasks(cellMask,cyto,outputPath,filePrefix,'cell',args.saveFig,args.saveMask)
   
-        cytoplasmMask,nucleiMaskTemp,cellMask = S3CytoplasmSegmentation(nucleiMask,cyto,TMAmask,'ring',args.cytoDilation)
+        cytoplasmMask,nucleiMaskTemp,cellMask = S3CytoplasmSegmentation(nucleiMask,None,TMAmask,'ring',args.cytoDilation)
         exportMasks(nucleiMaskTemp,nucleiCrop,outputPath,filePrefix,'nucleiRing',args.saveFig,args.saveMask)
         exportMasks(cytoplasmMask,cyto,outputPath,filePrefix,'cytoRing',args.saveFig,args.saveMask)
         exportMasks(cellMask,cyto,outputPath,filePrefix,'cellRing',args.saveFig,args.saveMask)
