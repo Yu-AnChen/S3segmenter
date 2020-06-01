@@ -6,8 +6,8 @@ from skimage import io as skio
 # from scipy.ndimage import *
 import scipy.ndimage as ndi
 from skimage.measure import regionprops
-from skimage.transform import resize
-from skimage.filters import threshold_otsu, gaussian
+from skimage.transform import resize, rescale
+from skimage.filters import threshold_otsu, gaussian, threshold_triangle
 from skimage.feature import peak_local_max
 from skimage.color import label2rgb
 from skimage.io import imsave
@@ -380,7 +380,14 @@ def exportMasks(mask,image,outputPath,filePrefix,fileName,saveFig=True,saveMasks
         stacked_img=np.stack((np.uint16(edges)*65535,image),axis=0)
         tifffile.imsave(outputPath + os.path.sep + fileName + 'Outlines.tif',stacked_img)
         
-    
+def auto_coarse_mask(nucleiContours):
+    thumb_nucleiContours = rescale(nucleiContours, 1/50)
+    mask_threshold = threshold_triangle(thumb_nucleiContours)
+    tissue_mask = resize(
+        thumb_nucleiContours>mask_threshold, 
+        nucleiContours.shape
+    ).astype(np.uint8)
+    return tissue_mask
         
     # assign nan to tissue mask
 
@@ -479,7 +486,11 @@ if __name__ == '__main__':
     # mask the core/tissue
     print(datetime.datetime.now(), 'Computing tissue mask')
     if args.crop == 'dearray':
-        TMAmask = tifffile.imread(maskPath)
+        try:
+            TMAmask = tifffile.imread(maskPath)
+        except ValueError:
+            TMAmask = auto_coarse_mask(nucleiPM[..., 1])
+        
     elif args.crop =='plate':
         TMAmask = np.ones(nucleiCrop.shape)
 		
