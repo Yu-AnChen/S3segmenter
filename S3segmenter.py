@@ -202,7 +202,7 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
     minArea = (logSigma[0]**2)*3/4
 
     foregroundMask = np.array(
-        Parallel(n_jobs=6, prefer='threads')(delayed(contour_pm_watershed)(
+        Parallel(n_jobs=6)(delayed(contour_pm_watershed)(
             img, sigma=logSigma[1]/30, h=logSigma[1]/30, tissue_mask=tm,
             padding_mask=m, min_size=minArea, max_size=maxArea
         ) for img, tm, m in zip(nucleiContours, mask, padding_mask))
