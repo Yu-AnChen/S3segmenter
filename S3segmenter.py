@@ -276,10 +276,11 @@ def bwmorph(mask,radius):
 #    imshowpair(bg,mask)
 
 def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',radius = 5):
-    mask = (nucleiMask + resize(mask,(nucleiMask.shape[0],nucleiMask.shape[1]),order=0))>0
-    gdist = ndi.distance_transform_edt(1-(nucleiMask>0))
+    
     if cytoMethod == 'distanceTransform':
+        mask = (nucleiMask + resize(mask,(nucleiMask.shape[0],nucleiMask.shape[1]),order=0))>0
         mask = np.array(mask,dtype=np.uint32)
+        gdist = ndi.distance_transform_edt(1-(nucleiMask>0))
         markers= nucleiMask
     elif cytoMethod == 'hybrid':
         cytoBlur = gaussian(cyto,2)
