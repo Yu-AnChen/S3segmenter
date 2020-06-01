@@ -144,12 +144,12 @@ def contour_pm_watershed(
         footprint=np.ones((3, 3))
     )
     maxima = label(maxima).astype(np.int32)
-    # passing mask to the watershed function gives very different result
-    # will need to inspect more
+    
+    # Passing mask into the watershed function will exclude seeds outside
+    # of the mask, which gives fewer and more accurate segments
     maxima = watershed(
-        contour_pm, maxima, watershed_line=True, mask=None
+        contour_pm, maxima, watershed_line=True, mask=tissue_mask
     ) > 0
-    maxima *= tissue_mask
     
     if min_size is not None and max_size is not None:
         maxima = label(maxima, connectivity=1).astype(np.int32)
@@ -196,8 +196,7 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
         mask, block_size, overlap_size
     ).reshape(-1, block_size, block_size) 
 
-    print('    ', datetime.datetime.now(), 'local max')
-    print('    ', datetime.datetime.now(), 'watershed')
+    print('    ', datetime.datetime.now(), 'local max and watershed')
 
     maxArea = (logSigma[1]**2)*3/4
     minArea = (logSigma[0]**2)*3/4
