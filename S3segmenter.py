@@ -537,8 +537,8 @@ if __name__ == '__main__':
   
         cytoplasmMask,nucleiMaskTemp,cellMask = S3CytoplasmSegmentation(nucleiMask,None,TMAmask,'ring',args.cytoDilation)
         exportMasks(nucleiMaskTemp,nucleiCrop,outputPath,filePrefix,'nucleiRing',args.saveFig,args.saveMask)
-        exportMasks(cytoplasmMask,cyto,outputPath,filePrefix,'cytoRing',args.saveFig,args.saveMask)
-        exportMasks(cellMask,cyto,outputPath,filePrefix,'cellRing',args.saveFig,args.saveMask)
+        exportMasks(cytoplasmMask,nucleiCrop,outputPath,filePrefix,'cytoRing',args.saveFig,args.saveMask)
+        exportMasks(cellMask,nucleiCrop,outputPath,filePrefix,'cellRing',args.saveFig,args.saveMask)
         
     elif args.segmentCytoplasm == 'ignoreCytoplasm':
         exportMasks(nucleiMask,nucleiCrop,outputPath,filePrefix,'nuclei')
