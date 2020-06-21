@@ -31,6 +31,7 @@ import copy
 import datetime
 from skimage.util import view_as_windows, montage
 from joblib import Parallel, delayed
+from rowit import WindowView
 
 
 def imshowpair(A,B):
@@ -56,57 +57,6 @@ def normI(I):
     p99 = np.percentile(Irs,99.99);
     J = J/(p99-p1);
     return J
-
-def view_as_windows_overlap(
-    img, block_size, overlap_size, pad_mode='constant',
-    return_padding_mask=False
-): 
-    init_shape = img.shape
-    step_size = block_size - overlap_size
-
-    padded_shape = np.array(init_shape) + overlap_size
-    n = np.ceil((padded_shape - block_size) / step_size)
-    padded_shape = (block_size + (n * step_size)).astype(np.int)
-
-    half = int(overlap_size / 2)
-    img = np.pad(img, (
-        (half, padded_shape[0] - init_shape[0] - half), 
-        (half, padded_shape[1] - init_shape[1] - half),
-    ), mode=pad_mode)
-
-    if return_padding_mask:
-        padding_mask = np.ones(init_shape)
-        padding_mask = np.pad(padding_mask, (
-            (half, padded_shape[0] - init_shape[0] - half), 
-            (half, padded_shape[1] - init_shape[1] - half),
-        ), mode='constant', constant_values=0).astype(np.bool)
-        return (
-            view_as_windows(img, block_size, step_size),
-            view_as_windows(padding_mask, block_size, step_size)
-        )
-    else:
-        return view_as_windows(img, block_size, step_size)
-
-def reconstruct_from_windows(
-    window_view, block_size, overlap_size, out_shape=None
-):
-    grid_shape = window_view.shape[:2]
-
-    start = int(overlap_size / 2)
-    end = int(block_size - start)
-
-    window_view = window_view.reshape(
-        (-1, block_size, block_size)
-    )[..., start:end, start:end]
-
-    if out_shape:
-        re, ce = out_shape
-    else:
-        re, ce = None, None
-
-    return montage(
-        window_view, grid_shape=grid_shape, 
-    )[:re, :ce]
 
 def crop_with_padding_mask(img, padding_mask, return_mask=False):
     if np.all(padding_mask == 1):
@@ -179,24 +129,11 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
     logMask = nucleiCenters > 150
     # dist_trans_img = ndi.distance_transform_edt(logMask)
     
-    img_shape = nucleiContours.shape
-    block_size = 2000
-    overlap_size = 500
-    window_view_shape = view_as_windows_overlap(
-        nucleiContours, block_size, overlap_size
-    ).shape
+    win_view_setting = WindowView(nucleiContours.shape, 2000, 500)
 
-    nucleiContours, padding_mask = view_as_windows_overlap(
-        nucleiContours, block_size, overlap_size,
-        pad_mode='constant', return_padding_mask=True
-    )
-    nucleiContours = nucleiContours.reshape(-1, block_size, block_size)
-    padding_mask = padding_mask.reshape(-1, block_size, block_size)
-    mask = view_as_windows_overlap(
-        mask, block_size, overlap_size
-    ).reshape(-1, block_size, block_size) 
-
-    print('    ', datetime.datetime.now(), 'local max and watershed')
+    nucleiContours = win_view_setting.window_view_list(nucleiContours)
+    padding_mask = win_view_setting.padding_mask()
+    mask = win_view_setting.window_view_list(mask)
 
     maxArea = (logSigma[1]**2)*3/4
     minArea = (logSigma[0]**2)*3/4
@@ -210,10 +147,7 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
 
     del nucleiContours, mask
 
-    foregroundMask = reconstruct_from_windows(
-        foregroundMask.reshape(window_view_shape),
-        block_size, overlap_size, img_shape
-    )
+    foregroundMask = win_view_setting.reconstruct(foregroundMask)
     foregroundMask = label(foregroundMask, connectivity=1).astype(np.int32)
 
     if nucleiFilter == 'IntPM':
@@ -311,26 +245,12 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
     # Update - the differences are gone if set watershed_line=False
 
     # settings for window operation
-    img_shape = nucleiMask.shape
-    block_size = 2000
-    overlap_size = 500
-    window_view_shape = view_as_windows_overlap(
-        nucleiMask, block_size, overlap_size
-    ).shape
+    win_view_setting = WindowView(nucleiMask.shape, 2000, 500)
     
-    # 4 cores
     print('    ', datetime.datetime.now(), 'watershed')
-    gdist = view_as_windows_overlap(
-        gdist, block_size, overlap_size
-    ).reshape(-1, block_size, block_size)
-
-    markers = view_as_windows_overlap(
-        markers, block_size, overlap_size
-    ).reshape(-1, block_size, block_size)
-
-    mask = view_as_windows_overlap(
-        mask, block_size, overlap_size
-    ).reshape(-1, block_size, block_size)
+    gdist = win_view_setting.window_view_list(gdist)
+    markers = win_view_setting.window_view_list(markers)
+    mask = win_view_setting.window_view_list(mask)
 
     # Wrapper to reduce memory useage
     def watershed_return_binary(img, marker, mask):
@@ -343,10 +263,8 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
         ) for g, m, w_m in zip(gdist, markers, mask))
     )
     del gdist, markers, mask
-    cellMask = reconstruct_from_windows(
-        cellMask.reshape(window_view_shape),
-        block_size, overlap_size, img_shape
-    )
+
+    cellMask = win_view_setting.reconstruct(cellMask)
     cellMask = label(cellMask, connectivity=1).astype(np.int32)
     cellMask = clear_border(cellMask)
     passed = np.unique(
