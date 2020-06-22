@@ -1,10 +1,11 @@
 import matplotlib.pyplot as plt
 import tifffile
 import os
+from os import listdir, makedirs, remove
 import numpy as np
-from skimage import io as skio
-# from scipy.ndimage import *
 import scipy.ndimage as ndi
+from scipy.ndimage.filters import uniform_filter
+from skimage import io as skio
 from skimage.measure import regionprops
 from skimage.transform import resize, rescale
 from skimage.filters import threshold_otsu, gaussian, threshold_triangle
@@ -16,20 +17,11 @@ from skimage.morphology import (
     extrema, label, remove_small_objects, binary_erosion,
     disk, binary_dilation
 )
-from scipy.ndimage.filters import uniform_filter
-from os.path import *
-from os import listdir, makedirs, remove
 from sklearn.cluster import KMeans
-import pickle
-import shutil
-import fnmatch
 import cv2
-import sys
 import argparse
-import re
 import copy
 import datetime
-from skimage.util import view_as_windows, montage
 from joblib import Parallel, delayed
 from rowit import WindowView, crop_with_padding_mask
 
