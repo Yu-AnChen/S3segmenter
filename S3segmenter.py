@@ -31,7 +31,7 @@ import copy
 import datetime
 from skimage.util import view_as_windows, montage
 from joblib import Parallel, delayed
-from rowit import WindowView
+from rowit import WindowView, crop_with_padding_mask
 
 
 def imshowpair(A,B):
@@ -58,21 +58,9 @@ def normI(I):
     J = J/(p99-p1);
     return J
 
-def crop_with_padding_mask(img, padding_mask, return_mask=False):
-    if np.all(padding_mask == 1):
-        return (img, padding_mask) if return_mask else img
-    (r_s, r_e), (c_s, c_e) = [
-        (i.min(), i.max() + 1)
-        for i in np.where(padding_mask == 1)
-    ]
-    padded = np.zeros_like(img)
-    img = img[r_s:r_e, c_s:c_e]
-    padded[r_s:r_e, c_s:c_e] = 1
-    return (img, padded) if return_mask else img
-
 def contour_pm_watershed(
     contour_pm, sigma=2, h=0, tissue_mask=None,
-    padding_mask=None, min_size=None, max_size=None
+    padding_mask=None, min_area=None, max_area=None
 ):
     if tissue_mask is None:
         tissue_mask = np.ones_like(contour_pm)
@@ -101,11 +89,11 @@ def contour_pm_watershed(
         contour_pm, maxima, watershed_line=True, mask=tissue_mask
     ) > 0
     
-    if min_size is not None and max_size is not None:
+    if min_area is not None and max_area is not None:
         maxima = label(maxima, connectivity=1).astype(np.int32)
         areas = np.bincount(maxima.ravel())
         size_passed = np.arange(areas.size)[
-            np.logical_and(areas > min_size, areas < max_size)
+            np.logical_and(areas > min_area, areas < max_area)
         ]
         maxima *= np.isin(maxima, size_passed)
         np.greater(maxima, 0, out=maxima)
@@ -119,7 +107,6 @@ def contour_pm_watershed(
 def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFilter,nucleiRegion):
     nucleiContours = nucleiPM[:,:,1]
     nucleiCenters = nucleiPM[:,:,0]
-    # del nucleiPM
     mask = resize(TMAmask,(nucleiImage.shape[0],nucleiImage.shape[1]),order = 0)>0
  
     if len(logSigma)==1:
@@ -127,7 +114,6 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
     else:
          nucleiDiameter = logSigma
     logMask = nucleiCenters > 150
-    # dist_trans_img = ndi.distance_transform_edt(logMask)
     
     win_view_setting = WindowView(nucleiContours.shape, 2000, 500)
 
@@ -141,7 +127,7 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
     foregroundMask = np.array(
         Parallel(n_jobs=6)(delayed(contour_pm_watershed)(
             img, sigma=logSigma[1]/30, h=logSigma[1]/30, tissue_mask=tm,
-            padding_mask=m, min_size=minArea, max_size=maxArea
+            padding_mask=m, min_area=minArea, max_area=maxArea
         ) for img, tm, m in zip(nucleiContours, mask, padding_mask))
     )
 
@@ -169,7 +155,6 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
     ).T
     del P
 
-    # kmeans = KMeans(n_clusters=2).fit(mean_int.reshape(-1,1))
     MITh = threshold_otsu(mean_ints)
 
     minSolidity = 0.8
@@ -187,11 +172,6 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
     foregroundMask = label(foregroundMask, connectivity=1).astype(np.int32)
 
     return foregroundMask
-    
-#    img2 = nucleiImage.copy()
-#    stacked_img = np.stack((img2,)*3, axis=-1)
-#    stacked_img[X > 0] = [65535, 0, 0]
-#    imshowpair(img2,stacked_img)
 
 def bwmorph(mask,radius):
     mask = np.array(mask,dtype=np.uint8)
