@@ -12,7 +12,7 @@ from skimage.filters import threshold_otsu, gaussian, threshold_triangle
 from skimage.feature import peak_local_max
 from skimage.color import label2rgb
 from skimage.io import imsave
-from skimage.segmentation import clear_border, watershed
+from skimage.segmentation import clear_border, watershed, find_boundaries
 from skimage.morphology import (
     extrema, label, remove_small_objects, binary_erosion,
     disk, binary_dilation
@@ -22,8 +22,9 @@ import cv2
 import argparse
 import copy
 import datetime
-from joblib import Parallel, delayed
 from rowit import WindowView, crop_with_padding_mask
+from joblib import Parallel, delayed, Memory
+memory = Memory('./cachedir', verbose=0)
 
 
 def imshowpair(A,B):
@@ -99,13 +100,13 @@ def contour_pm_watershed(
 def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFilter,nucleiRegion):
     nucleiContours = nucleiPM[:,:,1]
     nucleiCenters = nucleiPM[:,:,0]
+    del nucleiPM
     mask = resize(TMAmask,(nucleiImage.shape[0],nucleiImage.shape[1]),order = 0)>0
  
     if len(logSigma)==1:
          nucleiDiameter  = [logSigma*0.5, logSigma*1.5]
     else:
          nucleiDiameter = logSigma
-    logMask = nucleiCenters > 150
     
     win_view_setting = WindowView(nucleiContours.shape, 2000, 500)
 
@@ -117,52 +118,76 @@ def S3NucleiSegmentationWatershed(nucleiPM,nucleiImage,logSigma,TMAmask,nucleiFi
     minArea = (logSigma[0]**2)*3/4
 
     foregroundMask = np.array(
-        Parallel(n_jobs=6)(delayed(contour_pm_watershed)(
+        Parallel(n_jobs=10)(delayed(contour_pm_watershed)(
             img, sigma=logSigma[1]/30, h=logSigma[1]/30, tissue_mask=tm,
             padding_mask=m, min_area=minArea, max_area=maxArea
         ) for img, tm, m in zip(nucleiContours, mask, padding_mask))
     )
 
-    del nucleiContours, mask
+    del nucleiContours, mask, padding_mask
 
     foregroundMask = win_view_setting.reconstruct(foregroundMask)
-    foregroundMask = label(foregroundMask, connectivity=1).astype(np.int32)
 
     if nucleiFilter == 'IntPM':
         int_img = nucleiCenters
     elif nucleiFilter == 'Int':
         int_img = nucleiImage
+    elif nucleiFilter == 'LoG':
+        int_img = np.log1p(nucleiImage)
+    
+    return foregroundMask, int_img, minArea, maxArea
 
-    print('    ', datetime.datetime.now(), 'regionprops')
-    P = regionprops(foregroundMask, int_img)
+def filter_nuclei_mask(foregroundMask, int_img, minArea, maxArea, minSolidity=0.7):
+    wv_setting = WindowView(foregroundMask.shape, 20000, 1000)
+    foregroundMask = wv_setting.window_view_list(foregroundMask)
+    int_img = wv_setting.window_view_list(int_img)
 
-    def props_of_keys(prop, keys):
-        return [prop[k] for k in keys]
+    def wrapper(foregroundMask, int_img):
+        print('    ', datetime.datetime.now(), 'label')
+        foregroundMask = label(foregroundMask, connectivity=1)
 
-    prop_keys = ['mean_intensity', 'area', 'solidity', 'label']
-    mean_ints, areas, solidities, labels = np.array(
-        Parallel(n_jobs=6)(delayed(props_of_keys)(prop, prop_keys) 
-            for prop in P
-        )
-    ).T
-    del P
+        print('    ', datetime.datetime.now(), 'regionprops')
+        P = regionprops(foregroundMask, int_img)
 
-    MITh = threshold_otsu(mean_ints)
+        def props_of_keys(prop, keys):
+            return [prop[k] for k in keys]
 
-    minSolidity = 0.8
+        prop_keys = ['mean_intensity', 'area', 'solidity', 'label']
+        try:
+            mean_ints, areas, solidities, labels = np.array(
+                Parallel(n_jobs=8)(delayed(props_of_keys)(prop, prop_keys) 
+                    for prop in P
+                )
+            ).T
+            del P
+        except:
+            return np.zeros_like(foregroundMask).astype(np.bool)
 
-    passed = np.logical_and.reduce((
-        np.greater(mean_ints, MITh),
-        np.logical_and(areas > minArea, areas < maxArea),
-        np.greater(solidities, minSolidity)
-    ))
+        try:
+            MITh = threshold_otsu(mean_ints)
+        except ValueError:
+            MITh = 0
+        
+        passed = np.logical_and.reduce((
+            np.greater(mean_ints, MITh),
+            np.logical_and(areas > minArea, areas < maxArea),
+            np.greater(solidities, minSolidity)
+        ))
 
-    # set failed mask label to zero
-    foregroundMask *= np.isin(foregroundMask, labels[passed])
+        # set failed mask label to zero
+        foregroundMask *= np.isin(foregroundMask, labels[passed])
 
-    np.greater(foregroundMask, 0, out=foregroundMask)
-    foregroundMask = label(foregroundMask, connectivity=1).astype(np.int32)
+        np.greater(foregroundMask, 0, out=foregroundMask)
+        foregroundMask = label(foregroundMask, connectivity=1).astype(np.int32)
 
+        return foregroundMask > 0
+
+    foregroundMask = [
+        wrapper(m, i)
+        for m, i in zip(foregroundMask, int_img)
+    ]
+    print('    ', datetime.datetime.now(), 'reconstruct filtered')
+    foregroundMask = wv_setting.reconstruct(np.array(foregroundMask))
     return foregroundMask
 
 def bwmorph(mask,radius):
@@ -230,20 +255,21 @@ def S3CytoplasmSegmentation(nucleiMask,cyto,mask,cytoMethod='distanceTransform',
             watershed(img, marker, mask=mask, watershed_line=True) > 0
         ).astype(np.bool)
     cellMask = np.array(
-        Parallel(n_jobs=6)(delayed(watershed_return_binary)(
+        Parallel(n_jobs=8)(delayed(watershed_return_binary)(
             g, m, w_m
         ) for g, m, w_m in zip(gdist, markers, mask))
     )
     del gdist, markers, mask
 
     cellMask = win_view_setting.reconstruct(cellMask)
-    cellMask = label(cellMask, connectivity=1).astype(np.int32)
+    print('    ', datetime.datetime.now(), 'label')
+    cellMask = chop_label(cellMask)
     cellMask = clear_border(cellMask)
     passed = np.unique(
         np.multiply(cellMask, nucleiMask > 0)
     )
     cellMask *= np.isin(cellMask, passed)
-    cellMask = label(cellMask > 0, connectivity=1).astype(np.int32)
+    cellMask = chop_label(cellMask > 0).astype(np.int32)
     # Passing the out kwarg into numpy ufuncs will change the target
     # variable in-place, reassigning does not have this effect
     nucleiMask = np.multiply(nucleiMask > 0, cellMask)
@@ -266,7 +292,7 @@ def exportMasks(mask,image,outputPath,filePrefix,fileName,saveFig=True,saveMasks
         
     if saveFig== True:
         mask=np.uint8(mask>0)
-        edges=cv2.Canny(mask,0,1)
+        edges=find_boundaries(mask, mode='outer')
         stacked_img=np.stack((np.uint16(edges)*65535,image),axis=0)
         tifffile.imsave(outputPath + os.path.sep + fileName + 'Outlines.tif',stacked_img)
         
@@ -281,6 +307,34 @@ def auto_coarse_mask(nucleiContours):
         
     # assign nan to tissue mask
 
+def normalize_img_channel(img):
+    if img.ndim == 2:
+        return img.reshape(1, *img.shape)
+    elif img.ndim == 3:
+        if 3 in img.shape:
+            channel_idx = img.shape.index(3)
+            return np.moveaxis(img, channel_idx, 0)
+        else:
+            return img
+    else:
+        raise NotImplementedError(
+            'image of shape {} is not supported'.format(img.shape)
+        )
+
+def chop_label(mask):
+    height, _ = mask.shape
+    chop_height = 10000
+    
+    mask = mask.astype(np.int32)
+    id_max = 0
+    for i in range(np.ceil(height / chop_height).astype(int)):
+        r_s, r_e = i*chop_height, (i+1)*chop_height
+        labeled, id_max = label(mask[r_s:r_e, :] > 0, connectivity=1, return_num=True)
+        labeled[labeled != 0] += id_max
+        id_max += id_max
+        mask[r_s:r_e, :] = labeled
+    
+    return mask
 
 if __name__ == '__main__':
     parser=argparse.ArgumentParser()
@@ -367,9 +421,12 @@ if __name__ == '__main__':
         nucleiCrop = tifffile.imread(imagePath,key = nucMaskChan)
         rect = [0, 0, nucleiCrop.shape[0], nucleiCrop.shape[1]]
         PMrect= rect
-    nucleiProbMaps = tifffile.imread(nucleiClassProbPath,key=0)
+    nucleiProbMaps = tifffile.imread(nucleiClassProbPath)
+    nucleiProbMaps = normalize_img_channel(nucleiProbMaps)[0]
     nucleiPM = nucleiProbMaps[int(PMrect[0]):int(PMrect[0]+PMrect[2]), int(PMrect[1]):int(PMrect[1]+PMrect[3])]
-    nucleiProbMaps = tifffile.imread(contoursClassProbPath,key=0)
+    nucleiProbMaps = tifffile.imread(contoursClassProbPath)
+    nucleiProbMaps = normalize_img_channel(nucleiProbMaps)
+    nucleiProbMaps = nucleiProbMaps[1] if nucleiProbMaps.shape[0] == 3 else nucleiProbMaps[0]
     PMSize = nucleiProbMaps.shape
     nucleiPM = np.dstack((nucleiPM,nucleiProbMaps[int(PMrect[0]):int(PMrect[0]+PMrect[2]), int(PMrect[1]):int(PMrect[1]+PMrect[3])]))
 
@@ -379,6 +436,7 @@ if __name__ == '__main__':
         try:
             TMAmask = tifffile.imread(maskPath)
         except ValueError:
+            auto_coarse_mask = memory.cache(auto_coarse_mask)
             TMAmask = auto_coarse_mask(nucleiPM[..., 1])
         
     elif args.crop =='plate':
@@ -411,7 +469,17 @@ if __name__ == '__main__':
 
     # nuclei segmentation
     print(datetime.datetime.now(), 'Segmenting nuclei')
-    nucleiMask = S3NucleiSegmentationWatershed(nucleiPM,nucleiCrop,args.logSigma,TMAmask,args.nucleiFilter,args.nucleiRegion)
+    nucleiMask, int_img, minArea, maxArea = S3NucleiSegmentationWatershed(
+        nucleiPM,nucleiCrop,args.logSigma,TMAmask,args.nucleiFilter,args.nucleiRegion
+    )
+    filter_nuclei_mask = memory.cache(filter_nuclei_mask)
+    nucleiMask = filter_nuclei_mask(
+        nucleiMask, int_img, minArea, maxArea, minSolidity=0.7
+    )
+
+    print(datetime.datetime.now(), 'Label nuclei mask')
+    nucleiMask = chop_label(nucleiMask)
+
     del nucleiPM
     # cytoplasm segmentation
     print(datetime.datetime.now(), 'Segmenting cytoplasm')
@@ -435,7 +503,8 @@ if __name__ == '__main__':
             exportMasks(nucleiMaskTemp,nucleiCrop,outputPath,filePrefix,'nuclei',args.saveFig,args.saveMask)
             exportMasks(cytoplasmMask,cyto,outputPath,filePrefix,'cyto',args.saveFig,args.saveMask)
             exportMasks(cellMask,cyto,outputPath,filePrefix,'cell',args.saveFig,args.saveMask)
-  
+
+        print(datetime.datetime.now(), '  Segmenting cytoplasm - ring')
         cytoplasmMask,nucleiMaskTemp,cellMask = S3CytoplasmSegmentation(nucleiMask,None,TMAmask,'ring',args.cytoDilation)
         exportMasks(nucleiMaskTemp,nucleiCrop,outputPath,filePrefix,'nucleiRing',args.saveFig,args.saveMask)
         exportMasks(cytoplasmMask,nucleiCrop,outputPath,filePrefix,'cytoRing',args.saveFig,args.saveMask)
